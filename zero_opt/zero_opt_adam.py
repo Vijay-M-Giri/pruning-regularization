@@ -24,27 +24,22 @@ class ZeroOptAdam(tf.optimizers.Adam):
         if self.prune:
             t_vars = list(filter(lambda x: "kernel" in x.name, variables))
             k = len(t_vars)
-            for i in range(k - 1):
-                n_prev, n_cur = t_vars[i].shape
-                if i == 0:
-                    prune_nodes = self.get_nodes_to_prune(t_vars[i], 1)
-                    keep_nodes = tf.logical_not(prune_nodes)
-                    prune_mask = self.get_prune_mask(t_vars[i], keep_nodes, 0)
-                    var = tf.multiply(t_vars[i], prune_mask)
-                    t_vars[i].assign(var)
-                prune_nodes = self.get_nodes_to_prune(t_vars[i], 0)
-                if i + 1 < k:
-                    prune_nodes = tf.math.logical_or(
-                                    self.get_nodes_to_prune(t_vars[i + 1], 1),
-                                    prune_nodes)
+            for i in range(k):
+                cur_var = tf.reduce_sum(
+                    t_vars[i], axis=list(range(len(t_vars[i].shape) - 2)))
+                prune_nodes = self.get_nodes_to_prune(cur_var, 1)
                 keep_nodes = tf.logical_not(prune_nodes)
-                prune_mask = self.get_prune_mask(t_vars[i], keep_nodes, 1)
-                t_vars[i].assign(tf.multiply(t_vars[i], prune_mask))
-                if i + 1 < k:
-                    prune_mask = self.get_prune_mask(t_vars[i + 1],
-                                                     keep_nodes, 0)
-                    t_vars[i + 1].assign(tf.multiply(t_vars[i + 1],
-                                                     prune_mask))
+                prune_mask = self.get_prune_mask(cur_var, keep_nodes, 0)
+                prune_sum = tf.multiply(cur_var, prune_mask)
+                var = self.get_var_from_sum(t_vars[i], prune_sum)
+                t_vars[i].assign(var)
+                if i < k - 1:
+                    prune_nodes = self.get_nodes_to_prune(cur_var, 0)
+                    keep_nodes = tf.logical_not(prune_nodes)
+                    prune_mask = self.get_prune_mask(cur_var, keep_nodes, 1)
+                    prune_sum = tf.multiply(cur_var, prune_mask)
+                    var = self.get_var_from_sum(t_vars[i], prune_sum)
+                    t_vars[i].assign(var)
 
     def _gradient_mask(self, gradients, variables):
         gzt = []
@@ -69,3 +64,13 @@ class ZeroOptAdam(tf.optimizers.Adam):
         return tf.less_equal(
             tf.reduce_sum(tf.abs(tf.tanh(50 * var)), axis=axis),
             self.threshold * n)
+
+    def get_var_from_sum(self, var, prune_sum):
+        if len(var.shape) <= 2:
+            return tf.where(prune_sum == 0, tf.zeros_like(var), var)
+        broad = tf.broadcast_to(
+            tf.reshape(
+                prune_sum,
+                tf.TensorShape([1, 1]).concatenate(prune_sum.shape)),
+            var.shape)
+        return tf.where(broad == 0, tf.zeros_like(var), var)
